@@ -29,7 +29,7 @@ Nazwa firmy, telefon, Twoje imię/samochód/numer rejestracyjny (widzi je klient
 Zamówienia zapisują się w `data/rides.json` (`DATA_FILE` zmienia lokalizację, `PORT` – port).
 
 ## Wdrożenie na Render
-W repozytorium jest `render.yaml` (usługa Node + dysk 1 GB na zamówienia, plan Starter – na darmowym planie dane znikałyby przy każdym restarcie).
+W repozytorium jest `render.yaml` (plan darmowy, wersja prototypowa: zamówienia znikają przy restarcie, a usługa usypia po bezczynności i budzi się ok. minuty). Do realnego użycia zmień plan na `starter` i dodaj dysk z `DATA_FILE=/var/data/rides.json`.
 1. Otwórz `https://dashboard.render.com/blueprint/new?repo=<adres repozytorium na GitHubie>`, wybierz gałąź z `render.yaml`.
 2. Wpisz `ADMIN_PASSWORD` (hasło do aplikacji kierowcy) i kliknij **Apply**.
 3. Render daje adres HTTPS (wymagany do lokalizacji w telefonie); własną domenę dodasz w ustawieniach usługi.
