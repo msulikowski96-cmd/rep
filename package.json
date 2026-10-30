@@ -1,0 +1,13 @@
+{
+  "name": "taxi-zamowienia",
+  "version": "1.0.0",
+  "description": "Aplikacja webowa do zamawiania przejazdów taxi",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "engines": { "node": ">=18" },
+  "license": "UNLICENSED",
+  "private": true
+}

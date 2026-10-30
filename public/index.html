@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Zamów taxi</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <h1 id="biz">Taxi</h1>
+    <a class="call" id="callBtn" href="#">Zadzwoń</a>
+  </div>
+</header>
+<main class="wrap">
+  <section class="card" id="formCard">
+    <h2>Zamów przejazd</h2>
+    <p class="tariff" id="tariff"></p>
+    <form id="orderForm" novalidate>
+      <label for="pickup">Adres odbioru</label>
+      <input id="pickup" name="pickup" autocomplete="street-address" required maxlength="200" placeholder="np. ul. Długa 5">
+      <label for="destination">Dokąd jedziemy?</label>
+      <input id="destination" name="destination" required maxlength="200" placeholder="np. Dworzec Główny">
+
+      <label>Kiedy?</label>
+      <div class="seg" role="radiogroup" aria-label="Termin">
+        <label><input type="radio" name="timing" value="now" checked><span>Jak najszybciej</span></label>
+        <label><input type="radio" name="timing" value="later"><span>Na konkretną godzinę</span></label>
+      </div>
+      <div id="whenBox" class="hidden">
+        <label for="when">Data i godzina odbioru</label>
+        <input id="when" type="datetime-local">
+      </div>
+
+      <div class="row">
+        <div><label for="name">Imię</label><input id="name" name="name" autocomplete="given-name" required maxlength="80"></div>
+        <div><label for="phone">Telefon</label><input id="phone" name="phone" type="tel" autocomplete="tel" required maxlength="20" placeholder="600 000 000"></div>
+      </div>
+      <label for="passengers">Liczba pasażerów</label>
+      <select id="passengers" name="passengers"></select>
+      <label for="notes">Uwagi (opcjonalnie)</label>
+      <textarea id="notes" name="notes" maxlength="500" placeholder="np. bagaż, fotelik dziecięcy, zwierzę"></textarea>
+
+      <button class="full" id="submitBtn" type="submit">Wyślij zamówienie</button>
+      <div id="formErr" class="msg err hidden" role="alert"></div>
+    </form>
+  </section>
+
+  <section class="card hidden" id="doneCard" aria-live="polite">
+    <h2>Zamówienie przyjęte ✔</h2>
+    <p>Dziękuję! Odezwę się, żeby potwierdzić przejazd. Zapisz kod, aby sprawdzić status:</p>
+    <div class="code" id="doneCode"></div>
+    <button class="ghost full" id="againBtn" type="button">Nowe zamówienie</button>
+  </section>
+
+  <section class="card">
+    <h2>Sprawdź status zamówienia</h2>
+    <form class="inline" id="lookupForm">
+      <input id="lookupCode" aria-label="Kod zamówienia" placeholder="Kod zamówienia" maxlength="6" autocapitalize="characters" required>
+      <button type="submit">Sprawdź</button>
+    </form>
+    <div id="lookupErr" class="msg err hidden" role="alert"></div>
+    <div id="lookupResult" class="hidden" aria-live="polite"></div>
+  </section>
+</main>
+<script src="/app.js"></script>
+</body>
+</html>

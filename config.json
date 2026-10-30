@@ -1,0 +1,12 @@
+{
+  "businessName": "Moje Taxi",
+  "phone": "+48 600 000 000",
+  "city": "Twoje miasto",
+  "tariff": {
+    "baseFare": 8,
+    "perKm": 3.5,
+    "currency": "zł",
+    "note": "Cena orientacyjna. Ostateczną kwotę potwierdzę po przyjęciu zamówienia."
+  },
+  "maxPassengers": 4
+}
