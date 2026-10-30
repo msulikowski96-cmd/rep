@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: taxi-zamowienia
+    runtime: node
+    plan: starter            # dysk trwały nie jest dostępny na planie free
+    buildCommand: echo "brak zależności do zainstalowania"
+    startCommand: node server.js
+    healthCheckPath: /api/config
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATA_FILE
+        value: /var/data/rides.json
+      - key: ADMIN_PASSWORD
+        sync: false          # ustawisz w Dashboard przy wdrożeniu
+    disk:
+      name: rides-data
+      mountPath: /var/data
+      sizeGB: 1

@@ -28,8 +28,12 @@ Nazwa firmy, telefon, Twoje imię/samochód/numer rejestracyjny (widzi je klient
 
 Zamówienia zapisują się w `data/rides.json` (`DATA_FILE` zmienia lokalizację, `PORT` – port).
 
-## Wdrożenie
-Wymaga hostingu z Node.js, **HTTPS** (bez niego telefon nie udostępni lokalizacji!) i trwałego dysku na `data/`. Ustaw `ADMIN_PASSWORD`.
+## Wdrożenie na Render
+W repozytorium jest `render.yaml` (usługa Node + dysk 1 GB na zamówienia, plan Starter – na darmowym planie dane znikałyby przy każdym restarcie).
+1. Otwórz `https://dashboard.render.com/blueprint/new?repo=<adres repozytorium na GitHubie>`, wybierz gałąź z `render.yaml`.
+2. Wpisz `ADMIN_PASSWORD` (hasło do aplikacji kierowcy) i kliknij **Apply**.
+3. Render daje adres HTTPS (wymagany do lokalizacji w telefonie); własną domenę dodasz w ustawieniach usługi.
+
 Uwaga: darmowe serwery OSM (kafelki, Nominatim, OSRM) są przeznaczone do małego ruchu; przy większym ruchu warto przejść na płatnego dostawcę map.
 
 ## Testy
