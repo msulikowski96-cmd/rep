@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#14171c">
+  <meta name="robots" content="noindex">
+  <title>Taxi – kierowca</title>
+  <link rel="manifest" href="/driver.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/icon-192.png">
+  <link rel="stylesheet" href="/vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<div class="login" id="login">
+  <form id="loginForm">
+    <h1>🚕 Panel kierowcy</h1>
+    <label class="l" for="pw">Hasło</label>
+    <input id="pw" type="password" autocomplete="current-password" required>
+    <button class="btn" type="submit">Zaloguj</button>
+    <div class="msg err hidden" id="loginErr" role="alert"></div>
+  </form>
+</div>
+
+<div id="map"></div>
+<div class="topbar">
+  <button class="chip toggle" id="toggle" type="button"><span class="dot" id="toggleDot"></span><span id="toggleText">Offline</span></button>
+  <button class="chip" id="logout" type="button">Wyloguj</button>
+</div>
+
+<main class="sheet" id="sheet" aria-live="polite">
+  <!-- bezczynny -->
+  <section id="vIdle">
+    <h2 id="idleTitle">Jesteś offline</h2>
+    <p class="muted" id="idleSub">Przełącz się na online, aby odbierać zamówienia.</p>
+    <div class="msg err hidden" id="gpsWarn">Brak dostępu do lokalizacji – klienci nie zobaczą Twojej pozycji.</div>
+    <div class="stats"><div class="card"><b id="stCount">0</b><span class="muted small">kursów dziś</span></div><div class="card"><b id="stTotal">0 zł</b><span class="muted small">zarobek dziś</span></div></div>
+    <div id="upcoming"></div>
+    <button class="btn ghost small" id="histBtn" type="button">Historia</button>
+    <ul class="hist hidden" id="hist"></ul>
+  </section>
+
+  <!-- nowe zlecenie -->
+  <section id="vNew" class="hidden">
+    <h2 class="pulse">Nowe zamówienie!</h2>
+    <p class="muted small" id="newMore"></p>
+    <div class="card">
+      <div class="route"><div id="nPickup"></div><div class="d" id="nDest"></div></div>
+      <div class="row"><span class="small muted" id="nMeta"></span><b id="nPrice"></b></div>
+      <div class="small muted" id="nWho"></div>
+      <div class="small" id="nNotes"></div>
+    </div>
+    <div class="row"><button class="btn bad" id="rejectBtn" type="button">Odrzuć</button><button class="btn ok" id="acceptBtn" type="button">Przyjmij</button></div>
+  </section>
+
+  <!-- kurs w toku -->
+  <section id="vActive" class="hidden">
+    <h2 id="aTitle"></h2>
+    <p class="muted" id="aSub"></p>
+    <div class="card">
+      <div class="person"><div class="avatar" id="aAvatar"></div><div><div class="big" id="aName"></div><div class="small muted" id="aMeta"></div></div><b id="aPrice"></b></div>
+      <div class="route"><div id="aPickup"></div><div class="d" id="aDest"></div></div>
+      <div class="small" id="aNotes"></div>
+      <div class="row"><a class="btn ghost small" id="aCall" href="#">📞 Zadzwoń</a><a class="btn ghost small" id="aNav" href="#" target="_blank" rel="noopener">🧭 Nawiguj</a></div>
+    </div>
+    <div id="priceBox" class="hidden"><label class="l" for="finalPrice">Kwota do zapłaty (zł)</label><input id="finalPrice" class="plain" type="number" min="0" step="0.5" inputmode="decimal"></div>
+    <div class="msg err hidden" id="aErr" role="alert"></div>
+    <button class="btn" id="stepBtn" type="button"></button>
+    <button class="btn ghost small" id="cancelRide" type="button">Anuluj kurs</button>
+  </section>
+</main>
+<script src="/vendor/leaflet/leaflet.js"></script>
+<script src="/common.js"></script>
+<script src="/driver.js"></script>
+</body>
+</html>

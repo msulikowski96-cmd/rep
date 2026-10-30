@@ -12,39 +12,62 @@ let base;
 before(() => new Promise((r) => server.listen(0, () => { base = `http://localhost:${server.address().port}`; r(); })));
 after(() => server.close());
 
-const j = (p, o = {}) => fetch(base + p, { headers: { 'Content-Type': 'application/json', ...(o.headers || {}) }, ...o });
-const valid = { name: 'Anna', phone: '600 100 200', pickup: 'Długa 5', destination: 'Dworzec', passengers: 2, when: 'now' };
+const j = (p, o = {}) => fetch(base + p, { ...o, headers: { 'Content-Type': 'application/json', ...(o.headers || {}) } });
+const post = (p, body, headers) => j(p, { method: 'POST', body: JSON.stringify(body), headers });
+const A = { lat: 52.2297, lng: 21.0122, label: 'Start' };
+const B = { lat: 52.2400, lng: 21.0400, label: 'Cel' };
+const order = { pickup: A, destination: B, name: 'Anna', phone: '600 100 200', passengers: 2, when: 'now' };
 
 test('walidacja odrzuca złe dane', async () => {
-  const r = await j('/api/orders', { method: 'POST', body: JSON.stringify({ ...valid, phone: 'abc' }) });
-  assert.equal(r.status, 400);
+  assert.equal((await post('/api/rides', { ...order, phone: 'abc' })).status, 400);
+  assert.equal((await post('/api/rides', { ...order, pickup: { lat: 999, lng: 0 } })).status, 400);
 });
 
-test('pełny przepływ: zamówienie → panel → status', async () => {
-  const created = await (await j('/api/orders', { method: 'POST', body: JSON.stringify(valid) })).json();
-  assert.match(created.code, /^[A-Z2-9]{6}$/);
-  assert.equal(created.phone, undefined, 'publiczny widok nie zdradza telefonu');
+test('wycena liczona po stronie serwera', async () => {
+  const q = await (await post('/api/quote', { from: A, to: B })).json();
+  assert.ok(q.distanceKm > 1 && q.price >= 15 && q.line.length >= 2);
+});
 
-  assert.equal((await j('/api/admin/orders')).status, 401);
-  const { token } = await (await j('/api/admin/login', { method: 'POST', body: JSON.stringify({ password: 'sekret' }) })).json();
+test('pełny kurs: zamówienie → kierowca przyjmuje → kończy', async () => {
+  const created = await (await post('/api/rides', order)).json();
+  assert.equal(created.status, 'searching');
+  assert.equal(created.phone, undefined, 'widok klienta nie ujawnia danych z zamówienia');
+  const ride = `/api/rides/${created.id}?token=${created.token}`;
+  assert.equal((await j(`/api/rides/${created.id}?token=zle`)).status, 404, 'zły token');
+  assert.equal((await post('/api/rides', order)).status, 409, 'drugie aktywne zamówienie tego numeru');
+
+  assert.equal((await j('/api/driver/state')).status, 401);
+  const { token } = await (await post('/api/driver/login', { password: 'sekret' })).json();
   const auth = { Authorization: 'Bearer ' + token };
+  await post('/api/driver/presence', { online: true, lat: 52.23, lng: 21.01 }, auth);
 
-  const all = await (await j('/api/admin/orders', { headers: auth })).json();
-  assert.equal(all[0].phone, '600 100 200');
+  assert.equal((await j(ride).then((r) => r.json())).driverOnline, true);
+  const st = await (await j('/api/driver/state', { headers: auth })).json();
+  assert.equal(st.pending[0].phone, '600 100 200');
 
-  const patched = await (await j('/api/admin/orders/' + all[0].id, { method: 'PATCH', headers: auth, body: JSON.stringify({ status: 'confirmed', price: 25 }) })).json();
-  assert.equal(patched.status, 'confirmed');
+  const act = (action, extra) => post(`/api/driver/rides/${created.id}`, { action, ...extra }, auth);
+  assert.equal((await act('start')).status, 409, 'nie da się pominąć kroków');
+  assert.equal((await act('accept')).status, 200);
+  const accepted = await (await j(ride)).json();
+  assert.equal(accepted.status, 'accepted');
+  assert.equal(accepted.driver.lat, 52.23, 'klient widzi pozycję kierowcy');
+  assert.equal((await act('arrived')).status, 200);
+  assert.equal((await act('start')).status, 200);
+  assert.equal((await act('complete', { finalPrice: 31.5 })).status, 200);
+  const done = await (await j(ride)).json();
+  assert.equal(done.status, 'completed');
+  assert.equal(done.price, 31.5);
+  assert.equal(done.driver, null, 'po kursie pozycja kierowcy nie jest już udostępniana');
+});
 
-  const status = await (await j('/api/orders/' + created.code)).json();
-  assert.equal(status.status, 'confirmed');
-  assert.equal(status.price, 25);
-
-  const cancelled = await (await j('/api/orders/' + created.code, { method: 'DELETE' })).json();
-  assert.equal(cancelled.status, 'cancelled');
+test('klient może anulować, ale nie w trakcie jazdy', async () => {
+  const c = await (await post('/api/rides', { ...order, phone: '600 100 201' })).json();
+  const r = await post(`/api/rides/${c.id}/cancel?token=${c.token}`, {});
+  assert.equal((await r.json()).status, 'cancelled');
+  assert.equal((await post(`/api/rides/${c.id}/cancel?token=${c.token}`, {})).status, 409);
 });
 
 test('złe hasło i path traversal', async () => {
-  assert.equal((await j('/api/admin/login', { method: 'POST', body: JSON.stringify({ password: 'x' }) })).status, 401);
-  const r = await fetch(base + '/..%2fserver.js');
-  assert.notEqual(r.status, 200);
+  assert.equal((await post('/api/driver/login', { password: 'x' })).status, 401);
+  assert.notEqual((await fetch(base + '/..%2fserver.js')).status, 200);
 });

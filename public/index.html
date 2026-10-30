@@ -2,68 +2,65 @@
 <html lang="pl">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f5b800">
   <title>Zamów taxi</title>
-  <link rel="stylesheet" href="/style.css">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/icon-192.png">
+  <link rel="stylesheet" href="/vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="/app.css">
 </head>
 <body>
-<header>
-  <div class="wrap">
-    <h1 id="biz">Taxi</h1>
-    <a class="call" id="callBtn" href="#">Zadzwoń</a>
-  </div>
-</header>
-<main class="wrap">
-  <section class="card" id="formCard">
-    <h2>Zamów przejazd</h2>
-    <p class="tariff" id="tariff"></p>
-    <form id="orderForm" novalidate>
-      <label for="pickup">Adres odbioru</label>
-      <input id="pickup" name="pickup" autocomplete="street-address" required maxlength="200" placeholder="np. ul. Długa 5">
-      <label for="destination">Dokąd jedziemy?</label>
-      <input id="destination" name="destination" required maxlength="200" placeholder="np. Dworzec Główny">
+<div id="map"></div>
+<div class="topbar">
+  <span class="chip" id="biz">🚕 Taxi</span>
+  <a class="chip" id="callBtn" href="#">📞 Zadzwoń</a>
+</div>
 
-      <label>Kiedy?</label>
-      <div class="seg" role="radiogroup" aria-label="Termin">
-        <label><input type="radio" name="timing" value="now" checked><span>Jak najszybciej</span></label>
-        <label><input type="radio" name="timing" value="later"><span>Na konkretną godzinę</span></label>
-      </div>
-      <div id="whenBox" class="hidden">
-        <label for="when">Data i godzina odbioru</label>
-        <input id="when" type="datetime-local">
-      </div>
+<main class="sheet" id="sheet">
+  <!-- 1. planowanie trasy -->
+  <section id="vPlan">
+    <h2>Dokąd jedziemy?</h2>
+    <p class="muted small" id="onlineInfo"></p>
+    <div class="field"><span class="pin"></span><input id="pickup" placeholder="Skąd? (adres odbioru)" autocomplete="off" aria-label="Adres odbioru"><button class="gps" id="gpsBtn" type="button" aria-label="Użyj mojej lokalizacji">📍</button><div class="suggest hidden" id="pickupList"></div></div>
+    <div class="field"><span class="pin dest"></span><input id="dest" placeholder="Dokąd?" autocomplete="off" aria-label="Adres docelowy"><div class="suggest hidden" id="destList"></div></div>
 
-      <div class="row">
-        <div><label for="name">Imię</label><input id="name" name="name" autocomplete="given-name" required maxlength="80"></div>
-        <div><label for="phone">Telefon</label><input id="phone" name="phone" type="tel" autocomplete="tel" required maxlength="20" placeholder="600 000 000"></div>
+    <div id="orderBox" class="hidden">
+      <div class="quote"><div><div class="muted small" id="quoteMeta"></div><div class="muted small" id="quoteNote"></div></div><div class="price" id="quotePrice"></div></div>
+      <div class="grid2">
+        <div><label class="l" for="passengers">Pasażerowie</label><select id="passengers"></select></div>
+        <div><label class="l" for="timing">Kiedy?</label><select id="timing"><option value="now">Teraz</option><option value="later">Zaplanuj</option></select></div>
       </div>
-      <label for="passengers">Liczba pasażerów</label>
-      <select id="passengers" name="passengers"></select>
-      <label for="notes">Uwagi (opcjonalnie)</label>
-      <textarea id="notes" name="notes" maxlength="500" placeholder="np. bagaż, fotelik dziecięcy, zwierzę"></textarea>
-
-      <button class="full" id="submitBtn" type="submit">Wyślij zamówienie</button>
-      <div id="formErr" class="msg err hidden" role="alert"></div>
-    </form>
+      <div id="whenBox" class="hidden"><label class="l" for="when">Data i godzina odbioru</label><input id="when" type="datetime-local" class="plain"></div>
+      <div class="grid2">
+        <div><label class="l" for="name">Imię</label><input id="name" class="plain" autocomplete="given-name" maxlength="80"></div>
+        <div><label class="l" for="phone">Telefon</label><input id="phone" class="plain" type="tel" autocomplete="tel" maxlength="20"></div>
+      </div>
+      <label class="l" for="notes">Uwagi dla kierowcy</label>
+      <textarea id="notes" rows="2" maxlength="300" placeholder="np. bagaż, fotelik dziecięcy"></textarea>
+      <button class="btn" id="orderBtn" type="button">Zamów taxi</button>
+    </div>
+    <div class="msg err hidden" id="planErr" role="alert"></div>
   </section>
 
-  <section class="card hidden" id="doneCard" aria-live="polite">
-    <h2>Zamówienie przyjęte ✔</h2>
-    <p>Dziękuję! Odezwę się, żeby potwierdzić przejazd. Zapisz kod, aby sprawdzić status:</p>
-    <div class="code" id="doneCode"></div>
-    <button class="ghost full" id="againBtn" type="button">Nowe zamówienie</button>
-  </section>
-
-  <section class="card">
-    <h2>Sprawdź status zamówienia</h2>
-    <form class="inline" id="lookupForm">
-      <input id="lookupCode" aria-label="Kod zamówienia" placeholder="Kod zamówienia" maxlength="6" autocapitalize="characters" required>
-      <button type="submit">Sprawdź</button>
-    </form>
-    <div id="lookupErr" class="msg err hidden" role="alert"></div>
-    <div id="lookupResult" class="hidden" aria-live="polite"></div>
+  <!-- 2. aktywne zamówienie -->
+  <section id="vRide" class="hidden" aria-live="polite">
+    <div class="steps" id="steps"><i></i><i></i><i></i><i></i></div>
+    <h2 id="rideTitle"></h2>
+    <p class="muted" id="rideSub"></p>
+    <div class="card hidden" id="driverCard">
+      <div class="person"><div class="avatar" id="drvAvatar"></div><div><div class="big" id="drvName"></div><div class="small muted" id="drvCar"></div></div><span class="plate" id="drvPlate"></span></div>
+      <a class="btn ghost small" id="drvCall" href="#">📞 Zadzwoń do kierowcy</a>
+    </div>
+    <div class="card"><div class="route"><div id="rPickup"></div><div class="d" id="rDest"></div></div><div class="row small muted"><span id="rMeta"></span><b id="rPrice"></b></div></div>
+    <div class="msg err hidden" id="rideErr" role="alert"></div>
+    <button class="btn ghost hidden" id="cancelBtn" type="button">Anuluj zamówienie</button>
+    <button class="btn hidden" id="againBtn" type="button">Zamów ponownie</button>
   </section>
 </main>
-<script src="/app.js"></script>
+<script src="/vendor/leaflet/leaflet.js"></script>
+<script src="/common.js"></script>
+<script src="/client.js"></script>
 </body>
 </html>

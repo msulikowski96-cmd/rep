@@ -6,47 +6,32 @@ const crypto = require('node:crypto');
 
 const PORT = Number(process.env.PORT) || 3000;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
-const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, 'data', 'orders.json');
+const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, 'data', 'rides.json');
 const PUBLIC_DIR = path.join(__dirname, 'public');
+const UA = 'TaxiBookingApp/1.0 (self-hosted)';
 const config = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8'));
 
-const STATUSES = ['new', 'confirmed', 'completed', 'rejected', 'cancelled'];
 const MIME = {
-  '.html': 'text/html; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.svg': 'image/svg+xml',
-  '.ico': 'image/x-icon',
+  '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
+  '.svg': 'image/svg+xml', '.png': 'image/png', '.webmanifest': 'application/manifest+json',
 };
+const ACTIVE = ['accepted', 'arrived', 'in_progress'];
 
 // ---------- storage ----------
-let orders = [];
-try {
-  orders = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-} catch {
-  orders = [];
-}
-
+let rides = [];
+try { rides = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')); } catch { rides = []; }
 function save() {
   fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
   const tmp = DATA_FILE + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(orders, null, 2));
+  fs.writeFileSync(tmp, JSON.stringify(rides, null, 2));
   fs.renameSync(tmp, DATA_FILE);
 }
 
-function newCode() {
-  // bez mylących znaków (0/O, 1/I)
-  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let code;
-  do {
-    code = Array.from(crypto.randomBytes(6), (b) => alphabet[b % alphabet.length]).join('');
-  } while (orders.some((o) => o.code === code));
-  return code;
-}
-
-// ---------- helpers ----------
+// ---------- state ----------
+const driver = { online: false, lat: null, lng: null, ts: 0 };
 const sessions = new Set();
 const hits = new Map();
+const cache = new Map();
 
 function rateLimited(key, max, windowMs) {
   const now = Date.now();
@@ -56,175 +41,250 @@ function rateLimited(key, max, windowMs) {
   return recent.length > max;
 }
 
+// ---------- helpers ----------
 function send(res, status, body, headers = {}) {
-  const isJson = typeof body !== 'string' && !Buffer.isBuffer(body);
+  const isJson = typeof body !== 'string';
   res.writeHead(status, {
     'Content-Type': isJson ? 'application/json; charset=utf-8' : 'text/plain; charset=utf-8',
-    'X-Content-Type-Options': 'nosniff',
-    'Cache-Control': 'no-store',
-    ...headers,
+    'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store', ...headers,
   });
   res.end(isJson ? JSON.stringify(body) : body);
 }
 
 function readJson(req) {
   return new Promise((resolve, reject) => {
-    let size = 0;
-    const chunks = [];
+    let size = 0; const chunks = [];
     req.on('data', (c) => {
       size += c.length;
-      if (size > 20_000) {
-        reject(Object.assign(new Error('Za duże żądanie'), { status: 413 }));
-        req.destroy();
-      } else chunks.push(c);
+      if (size > 20_000) { reject(Object.assign(new Error('Za duże żądanie'), { status: 413 })); req.destroy(); } else chunks.push(c);
     });
     req.on('end', () => {
-      try {
-        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'));
-      } catch {
-        reject(Object.assign(new Error('Niepoprawny JSON'), { status: 400 }));
-      }
+      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')); }
+      catch { reject(Object.assign(new Error('Niepoprawny JSON'), { status: 400 })); }
     });
     req.on('error', reject);
   });
 }
 
-function isAdmin(req) {
-  const m = /^Bearer (.+)$/.exec(req.headers.authorization || '');
-  return Boolean(m && sessions.has(m[1]));
-}
-
+const isDriver = (req) => { const m = /^Bearer (.+)$/.exec(req.headers.authorization || ''); return Boolean(m && sessions.has(m[1])); };
 const str = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : NaN);
+const point = (p) => {
+  if (!p || typeof p !== 'object') return null;
+  const lat = num(p.lat), lng = num(p.lng);
+  if (!(lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180)) return null;
+  return { lat, lng, label: str(p.label, 200) };
+};
 
-function publicView(o) {
+function haversineKm(a, b) {
+  const r = Math.PI / 180, dLat = (b.lat - a.lat) * r, dLng = (b.lng - a.lng) * r;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin(dLng / 2) ** 2;
+  return 2 * 6371 * Math.asin(Math.sqrt(h));
+}
+
+async function fetchJson(url, ttlMs = 0) {
+  const hit = cache.get(url);
+  if (hit && Date.now() - hit.t < ttlMs) return hit.v;
+  const r = await fetch(url, { headers: { 'User-Agent': UA, 'Accept-Language': 'pl' }, signal: AbortSignal.timeout(6000) });
+  if (!r.ok) throw new Error('upstream ' + r.status);
+  const v = await r.json();
+  if (ttlMs) { cache.set(url, { t: Date.now(), v }); if (cache.size > 500) cache.delete(cache.keys().next().value); }
+  return v;
+}
+
+async function route(from, to) {
+  try {
+    const d = await fetchJson(`https://router.project-osrm.org/route/v1/driving/${from.lng},${from.lat};${to.lng},${to.lat}?overview=simplified&geometries=geojson`, 600_000);
+    const r = d.routes && d.routes[0];
+    if (r) return { distanceKm: r.distance / 1000, durationMin: r.duration / 60, line: r.geometry.coordinates.map(([lng, lat]) => [lat, lng]) };
+  } catch { /* fallback poniżej */ }
+  const km = haversineKm(from, to) * 1.3;
+  return { distanceKm: km, durationMin: (km / 35) * 60, line: [[from.lat, from.lng], [to.lat, to.lng]], approx: true };
+}
+
+function priceFor(km) {
+  const t = config.tariff;
+  return Math.max(t.minFare, Math.round(t.baseFare + t.perKm * km));
+}
+
+async function quote(from, to) {
+  const r = await route(from, to);
+  return { distanceKm: Math.round(r.distanceKm * 10) / 10, durationMin: Math.max(1, Math.round(r.durationMin)), price: priceFor(r.distanceKm), line: r.line, approx: Boolean(r.approx) };
+}
+
+const driverFresh = () => driver.online && Date.now() - driver.ts < 60_000;
+
+function clientView(r) {
+  const withDriver = ACTIVE.includes(r.status);
   return {
-    code: o.code,
-    status: o.status,
-    pickup: o.pickup,
-    destination: o.destination,
-    when: o.when,
-    passengers: o.passengers,
-    price: o.price,
-    driverNote: o.driverNote,
-    createdAt: o.createdAt,
+    id: r.id, code: r.code, status: r.status, pickup: r.pickup, destination: r.destination, when: r.when,
+    passengers: r.passengers, distanceKm: r.distanceKm, durationMin: r.durationMin,
+    price: r.finalPrice ?? r.price, finalPrice: r.finalPrice ?? null, createdAt: r.createdAt,
+    driver: withDriver ? { ...config.driver, phone: config.phone, lat: driver.lat, lng: driver.lng, ts: driver.ts } : null,
+    driverOnline: driverFresh(),
   };
 }
 
-function validateOrder(b) {
-  const o = {
-    name: str(b.name, 80),
-    phone: str(b.phone, 20),
-    pickup: str(b.pickup, 200),
-    destination: str(b.destination, 200),
-    when: str(b.when, 25),
-    passengers: Number(b.passengers),
-    notes: str(b.notes, 500),
-  };
-  if (o.name.length < 2) return { error: 'Podaj imię.' };
-  if (!/^\+?[0-9 ()-]{7,20}$/.test(o.phone)) return { error: 'Podaj poprawny numer telefonu.' };
-  if (o.pickup.length < 3) return { error: 'Podaj adres odbioru.' };
-  if (o.destination.length < 3) return { error: 'Podaj adres docelowy.' };
-  if (!Number.isInteger(o.passengers) || o.passengers < 1 || o.passengers > config.maxPassengers) {
-    return { error: `Liczba pasażerów: 1–${config.maxPassengers}.` };
-  }
-  if (o.when === 'now') {
-    o.when = 'now';
-  } else {
-    const t = Date.parse(o.when);
-    if (Number.isNaN(t)) return { error: 'Podaj poprawną datę i godzinę.' };
-    if (t < Date.now() - 5 * 60_000) return { error: 'Termin nie może być w przeszłości.' };
-    if (t > Date.now() + 90 * 86_400_000) return { error: 'Zamówienia przyjmuję maksymalnie 90 dni naprzód.' };
-    o.when = new Date(t).toISOString();
-  }
-  return { value: o };
+function normalizeWhen(w) {
+  if (w === 'now' || w === undefined) return { value: 'now' };
+  const t = Date.parse(w);
+  if (Number.isNaN(t)) return { error: 'Podaj poprawną datę i godzinę.' };
+  if (t < Date.now() - 5 * 60_000) return { error: 'Termin nie może być w przeszłości.' };
+  if (t > Date.now() + 90 * 86_400_000) return { error: 'Zamówienia przyjmuję maksymalnie 90 dni naprzód.' };
+  return { value: new Date(t).toISOString() };
 }
+
+function newCode() {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code;
+  do { code = Array.from(crypto.randomBytes(5), (b) => alphabet[b % alphabet.length]).join(''); } while (rides.some((r) => r.code === code));
+  return code;
+}
+
+const touch = (r) => { r.updatedAt = new Date().toISOString(); save(); };
 
 // ---------- API ----------
 async function handleApi(req, res, url) {
-  const { pathname } = url;
+  const { pathname, searchParams: q } = url;
   const ip = req.socket.remoteAddress || 'unknown';
+  const method = req.method;
 
-  if (req.method === 'GET' && pathname === '/api/config') {
-    return send(res, 200, config);
+  if (method === 'GET' && pathname === '/api/config') {
+    return send(res, 200, { businessName: config.businessName, phone: config.phone, mapCenter: config.mapCenter, driver: config.driver, tariff: config.tariff, maxPassengers: config.maxPassengers, driverOnline: driverFresh() });
   }
 
-  if (req.method === 'POST' && pathname === '/api/orders') {
-    if (rateLimited('order:' + ip, 5, 10 * 60_000)) {
-      return send(res, 429, { error: 'Zbyt wiele zamówień. Spróbuj za chwilę lub zadzwoń.' });
+  if (method === 'GET' && pathname === '/api/geocode') {
+    if (rateLimited('geo:' + ip, 40, 60_000)) return send(res, 429, { error: 'Zbyt wiele zapytań.' });
+    const text = str(q.get('q') || '', 120);
+    if (text.length < 3) return send(res, 200, []);
+    try {
+      const u = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5&countrycodes=${config.country}&q=${encodeURIComponent(text)}`;
+      const d = await fetchJson(u, 3_600_000);
+      return send(res, 200, d.map((x) => ({ label: x.display_name, lat: Number(x.lat), lng: Number(x.lon) })));
+    } catch { return send(res, 502, { error: 'Wyszukiwarka adresów chwilowo niedostępna.' }); }
+  }
+
+  if (method === 'GET' && pathname === '/api/reverse') {
+    if (rateLimited('rev:' + ip, 30, 60_000)) return send(res, 429, { error: 'Zbyt wiele zapytań.' });
+    const lat = Number(q.get('lat')), lng = Number(q.get('lng'));
+    if (!point({ lat, lng })) return send(res, 400, { error: 'Złe współrzędne.' });
+    try {
+      const d = await fetchJson(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&lat=${lat.toFixed(5)}&lon=${lng.toFixed(5)}`, 3_600_000);
+      const a = d.address || {};
+      const street = [a.road, a.house_number].filter(Boolean).join(' ');
+      return send(res, 200, { label: [street, a.city || a.town || a.village].filter(Boolean).join(', ') || d.display_name || 'Moja lokalizacja' });
+    } catch { return send(res, 200, { label: 'Moja lokalizacja' }); }
+  }
+
+  if (method === 'POST' && pathname === '/api/quote') {
+    if (rateLimited('quote:' + ip, 40, 60_000)) return send(res, 429, { error: 'Zbyt wiele zapytań.' });
+    const b = await readJson(req);
+    const from = point(b.from), to = point(b.to);
+    if (!from || !to) return send(res, 400, { error: 'Wybierz adres odbioru i adres docelowy.' });
+    return send(res, 200, await quote(from, to));
+  }
+
+  if (method === 'POST' && pathname === '/api/rides') {
+    if (rateLimited('ride:' + ip, 6, 10 * 60_000)) return send(res, 429, { error: 'Zbyt wiele zamówień. Zadzwoń do mnie.' });
+    const b = await readJson(req);
+    const pickup = point(b.pickup), destination = point(b.destination);
+    const name = str(b.name, 80), phone = str(b.phone, 20), notes = str(b.notes, 300);
+    const passengers = Number(b.passengers);
+    if (!pickup || !destination) return send(res, 400, { error: 'Wybierz adres odbioru i adres docelowy.' });
+    if (name.length < 2) return send(res, 400, { error: 'Podaj imię.' });
+    if (!/^\+?[0-9 ()-]{7,20}$/.test(phone)) return send(res, 400, { error: 'Podaj poprawny numer telefonu.' });
+    if (!Number.isInteger(passengers) || passengers < 1 || passengers > config.maxPassengers) return send(res, 400, { error: `Liczba pasażerów: 1–${config.maxPassengers}.` });
+    const when = normalizeWhen(b.when);
+    if (when.error) return send(res, 400, { error: when.error });
+    if (rides.some((r) => r.phone === phone && ['searching', ...ACTIVE].includes(r.status))) {
+      return send(res, 409, { error: 'Masz już aktywne zamówienie.' });
     }
-    const { value, error } = validateOrder(await readJson(req));
-    if (error) return send(res, 400, { error });
-    const order = {
-      id: crypto.randomUUID(),
-      code: newCode(),
-      status: 'new',
-      ...value,
-      price: null,
-      driverNote: '',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+    const qt = await quote(pickup, destination);
+    const ride = {
+      id: crypto.randomUUID(), token: crypto.randomBytes(16).toString('hex'), code: newCode(), status: 'searching',
+      name, phone, pickup, destination, when: when.value, passengers, notes,
+      distanceKm: qt.distanceKm, durationMin: qt.durationMin, price: qt.price, finalPrice: null,
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     };
-    orders.push(order);
-    save();
-    return send(res, 201, publicView(order));
+    rides.push(ride); save();
+    return send(res, 201, { ...clientView(ride), token: ride.token });
   }
 
-  let m = /^\/api\/orders\/([A-Za-z0-9]{6})$/.exec(pathname);
-  if (m && (req.method === 'GET' || req.method === 'DELETE')) {
-    if (rateLimited('lookup:' + ip, 30, 60_000)) return send(res, 429, { error: 'Zbyt wiele prób.' });
-    const order = orders.find((o) => o.code === m[1].toUpperCase());
-    if (!order) return send(res, 404, { error: 'Nie znaleziono zamówienia o takim kodzie.' });
-    if (req.method === 'GET') return send(res, 200, publicView(order));
-    if (!['new', 'confirmed'].includes(order.status)) {
-      return send(res, 409, { error: 'To zamówienie nie może już zostać anulowane.' });
+  let m = /^\/api\/rides\/([0-9a-f-]{36})(\/cancel)?$/.exec(pathname);
+  if (m) {
+    const ride = rides.find((r) => r.id === m[1]);
+    const token = Buffer.from(String(q.get('token') || ''));
+    const ok = ride && Buffer.from(ride.token).length === token.length && crypto.timingSafeEqual(Buffer.from(ride.token), token);
+    if (!ok) return send(res, 404, { error: 'Nie znaleziono zamówienia.' });
+    if (method === 'GET' && !m[2]) return send(res, 200, clientView(ride));
+    if (method === 'POST' && m[2]) {
+      if (!['searching', 'accepted', 'arrived'].includes(ride.status)) return send(res, 409, { error: 'Tego zamówienia nie można już anulować.' });
+      ride.status = 'cancelled'; ride.cancelledBy = 'client'; touch(ride);
+      return send(res, 200, clientView(ride));
     }
-    order.status = 'cancelled';
-    order.updatedAt = new Date().toISOString();
-    save();
-    return send(res, 200, publicView(order));
   }
 
-  if (req.method === 'POST' && pathname === '/api/admin/login') {
+  if (method === 'POST' && pathname === '/api/driver/login') {
     if (rateLimited('login:' + ip, 8, 10 * 60_000)) return send(res, 429, { error: 'Zbyt wiele prób logowania.' });
     const { password } = await readJson(req);
-    const a = Buffer.from(String(password || ''));
-    const b = Buffer.from(ADMIN_PASSWORD);
-    if (!ADMIN_PASSWORD || a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
-      return send(res, 401, { error: 'Błędne hasło.' });
-    }
+    const a = Buffer.from(String(password || '')), b = Buffer.from(ADMIN_PASSWORD);
+    if (!ADMIN_PASSWORD || a.length !== b.length || !crypto.timingSafeEqual(a, b)) return send(res, 401, { error: 'Błędne hasło.' });
     const token = crypto.randomBytes(24).toString('hex');
     sessions.add(token);
     return send(res, 200, { token });
   }
 
-  if (pathname.startsWith('/api/admin/')) {
-    if (!isAdmin(req)) return send(res, 401, { error: 'Brak autoryzacji.' });
+  if (pathname.startsWith('/api/driver/')) {
+    if (!isDriver(req)) return send(res, 401, { error: 'Brak autoryzacji.' });
 
-    if (req.method === 'GET' && pathname === '/api/admin/orders') {
-      return send(res, 200, [...orders].reverse());
+    if (method === 'GET' && pathname === '/api/driver/state') {
+      const today = new Date().toDateString();
+      const done = rides.filter((r) => r.status === 'completed' && new Date(r.updatedAt).toDateString() === today);
+      const byWhen = (a, b) => (a.when === 'now' ? 0 : Date.parse(a.when)) - (b.when === 'now' ? 0 : Date.parse(b.when));
+      const rank = { in_progress: 0, arrived: 1, accepted: 2 };
+      const active = rides.filter((r) => ACTIVE.includes(r.status)).sort((a, b) => rank[a.status] - rank[b.status] || byWhen(a, b));
+      return send(res, 200, {
+        online: driver.online,
+        pending: rides.filter((r) => r.status === 'searching').sort(byWhen),
+        active: active[0] || null,
+        upcoming: active.slice(1),
+        today: { count: done.length, total: done.reduce((s, r) => s + (r.finalPrice ?? r.price), 0) },
+        history: rides.filter((r) => ['completed', 'cancelled', 'rejected'].includes(r.status)).slice(-20).reverse(),
+      });
     }
 
-    m = /^\/api\/admin\/orders\/([0-9a-f-]{36})$/.exec(pathname);
-    if (m && req.method === 'PATCH') {
-      const order = orders.find((o) => o.id === m[1]);
-      if (!order) return send(res, 404, { error: 'Nie znaleziono zamówienia.' });
+    if (method === 'POST' && pathname === '/api/driver/presence') {
       const b = await readJson(req);
-      if (b.status !== undefined) {
-        if (!STATUSES.includes(b.status)) return send(res, 400, { error: 'Niepoprawny status.' });
-        order.status = b.status;
+      if (b.online !== undefined) driver.online = Boolean(b.online);
+      const p = point(b);
+      if (p) { driver.lat = p.lat; driver.lng = p.lng; }
+      driver.ts = Date.now();
+      return send(res, 200, { online: driver.online });
+    }
+
+    m = /^\/api\/driver\/rides\/([0-9a-f-]{36})$/.exec(pathname);
+    if (m && method === 'POST') {
+      const ride = rides.find((r) => r.id === m[1]);
+      if (!ride) return send(res, 404, { error: 'Nie znaleziono zamówienia.' });
+      const b = await readJson(req);
+      const flow = { accept: ['searching', 'accepted'], reject: ['searching', 'rejected'], arrived: ['accepted', 'arrived'], start: ['arrived', 'in_progress'], complete: ['in_progress', 'completed'], cancel: ['accepted', 'cancelled'] };
+      const step = flow[b.action];
+      if (!step) return send(res, 400, { error: 'Nieznana akcja.' });
+      const allowed = b.action === 'cancel' ? ['accepted', 'arrived', 'in_progress'] : [step[0]];
+      if (b.action === 'start') allowed.push('accepted');
+      if (!allowed.includes(ride.status)) return send(res, 409, { error: 'Ta akcja nie jest teraz możliwa.' });
+      if (b.action === 'accept' && rides.some((r) => r.id !== ride.id && ['arrived', 'in_progress'].includes(r.status))) {
+        return send(res, 409, { error: 'Najpierw dokończ trwający kurs.' });
       }
-      if (b.price !== undefined) {
-        if (b.price === null || b.price === '') order.price = null;
-        else {
-          const p = Number(b.price);
-          if (!Number.isFinite(p) || p < 0 || p > 100000) return send(res, 400, { error: 'Niepoprawna cena.' });
-          order.price = Math.round(p * 100) / 100;
-        }
+      if (b.action === 'complete' && b.finalPrice !== undefined) {
+        const p = Number(b.finalPrice);
+        if (!Number.isFinite(p) || p < 0 || p > 100000) return send(res, 400, { error: 'Niepoprawna cena.' });
+        ride.finalPrice = Math.round(p * 100) / 100;
       }
-      if (b.driverNote !== undefined) order.driverNote = str(b.driverNote, 300);
-      order.updatedAt = new Date().toISOString();
-      save();
-      return send(res, 200, order);
+      ride.status = step[1];
+      if (b.action === 'cancel') ride.cancelledBy = 'driver';
+      touch(ride);
+      return send(res, 200, ride);
     }
   }
 
@@ -232,19 +292,16 @@ async function handleApi(req, res, url) {
 }
 
 // ---------- static ----------
+const CSP = "default-src 'self'; img-src 'self' data: https://tile.openstreetmap.org; style-src 'self'; script-src 'self'; connect-src 'self'; manifest-src 'self'; frame-ancestors 'none'";
+const PAGES = { '/': '/index.html', '/driver': '/driver.html', '/admin': '/driver.html' };
+
 function serveStatic(req, res, url) {
-  let rel = decodeURIComponent(url.pathname);
-  if (rel === '/') rel = '/index.html';
-  if (rel === '/admin') rel = '/admin.html';
+  const rel = PAGES[url.pathname] || decodeURIComponent(url.pathname);
   const file = path.normalize(path.join(PUBLIC_DIR, rel));
   if (!file.startsWith(PUBLIC_DIR + path.sep)) return send(res, 403, 'Forbidden');
   fs.readFile(file, (err, data) => {
     if (err) return send(res, 404, 'Nie znaleziono');
-    res.writeHead(200, {
-      'Content-Type': MIME[path.extname(file)] || 'application/octet-stream',
-      'X-Content-Type-Options': 'nosniff',
-      'Content-Security-Policy': "default-src 'self'; style-src 'self'; script-src 'self'; frame-ancestors 'none'",
-    });
+    res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': CSP });
     res.end(data);
   });
 }
@@ -262,8 +319,8 @@ const server = http.createServer(async (req, res) => {
 });
 
 if (require.main === module) {
-  if (!ADMIN_PASSWORD) console.warn('UWAGA: ustaw ADMIN_PASSWORD, bez tego panel kierowcy jest niedostępny.');
-  server.listen(PORT, () => console.log(`Taxi: http://localhost:${PORT}  (panel: /admin)`));
+  if (!ADMIN_PASSWORD) console.warn('UWAGA: ustaw ADMIN_PASSWORD, bez tego aplikacja kierowcy jest niedostępna.');
+  server.listen(PORT, () => console.log(`Klient: http://localhost:${PORT}   Kierowca: http://localhost:${PORT}/driver`));
 }
 
 module.exports = server;

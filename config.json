@@ -1,12 +1,15 @@
 {
   "businessName": "Moje Taxi",
   "phone": "+48 600 000 000",
-  "city": "Twoje miasto",
+  "country": "pl",
+  "mapCenter": [52.2297, 21.0122],
+  "driver": { "name": "Twoje Imię", "car": "Toyota Corolla, biała", "plate": "WX 12345" },
   "tariff": {
     "baseFare": 8,
     "perKm": 3.5,
+    "minFare": 15,
     "currency": "zł",
-    "note": "Cena orientacyjna. Ostateczną kwotę potwierdzę po przyjęciu zamówienia."
+    "note": "Cena orientacyjna – dokładną kwotę potwierdzi kierowca."
   },
   "maxPassengers": 4
 }
